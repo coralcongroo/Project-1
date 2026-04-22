@@ -21,6 +21,9 @@ class MqttServerConfig:
     cafile: str = ""
     certfile: str = ""
     keyfile: str = ""
+    # 当 TLS 启用时，额外在 127.0.0.1 监听一个裸连端口供内部监控使用
+    # 设为 0 则不开启本地裸连监听
+    local_plain_port: int = 1883
 
 
 class MqttServerManager:
@@ -38,34 +41,51 @@ class MqttServerManager:
         return self._proc is not None and self._proc.poll() is None
 
     def write_config(self, cfg: MqttServerConfig) -> None:
-        lines = [
+        # ── 全局设置（不属于任何 listener 块）──
+        global_lines = [
             "persistence false",
-            f"listener {int(cfg.listener_port)} {cfg.listener_host}",
-            f"allow_anonymous {'true' if cfg.allow_anonymous else 'false'}",
-            "log_dest file " + str(self.log_path),
+            "log_dest file " + str(self.log_path.resolve()),  # 绝对路径
             "log_type all",
             "connection_messages true",
         ]
 
-        if cfg.tls_enabled:
-            if cfg.cafile.strip():
-                lines.append(f"cafile {cfg.cafile.strip()}")
-            if cfg.certfile.strip():
-                lines.append(f"certfile {cfg.certfile.strip()}")
-            if cfg.keyfile.strip():
-                lines.append(f"keyfile {cfg.keyfile.strip()}")
-            lines.append("tls_version tlsv1.2")
-
+        # ACL / 密码文件（全局）
         if cfg.password_file.strip():
-            lines.append(f"password_file {cfg.password_file.strip()}")
+            global_lines.append(f"password_file {Path(cfg.password_file.strip()).resolve()}")
         if cfg.acl_file.strip():
-            acl = Path(cfg.acl_file.strip())
+            acl = Path(cfg.acl_file.strip()).resolve()
             acl.parent.mkdir(parents=True, exist_ok=True)
             if not acl.exists():
                 acl.write_text("", encoding="utf-8")
-            lines.append(f"acl_file {acl}")
+            global_lines.append(f"acl_file {acl}")
 
-        self.config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # ── 主监听器（TLS 或裸连）──
+        main_lines = [
+            f"listener {int(cfg.listener_port)} {cfg.listener_host}",
+            f"allow_anonymous {'true' if cfg.allow_anonymous else 'false'}",
+        ]
+        if cfg.tls_enabled:
+            if cfg.cafile.strip():
+                main_lines.append(f"cafile {cfg.cafile.strip()}")
+            if cfg.certfile.strip():
+                main_lines.append(f"certfile {cfg.certfile.strip()}")
+            if cfg.keyfile.strip():
+                main_lines.append(f"keyfile {cfg.keyfile.strip()}")
+            main_lines.append("tls_version tlsv1.2")
+
+        # ── 本地裸连监听器（供内部监控/测试，独立于 TLS 设置）──
+        local_lines: list[str] = []
+        if int(cfg.local_plain_port) > 0:
+            local_lines = [
+                f"listener {int(cfg.local_plain_port)} 127.0.0.1",
+                "allow_anonymous true",  # 本机内部，不需要认证
+            ]
+
+        all_lines = global_lines + [""] + main_lines
+        if local_lines:
+            all_lines += [""] + local_lines
+
+        self.config_path.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
 
     def write_acl_from_macs(self, macs: Iterable[str], out_path: Optional[str] = None) -> Path:
         """
@@ -130,8 +150,7 @@ class MqttServerManager:
 
         log_fp = self.log_path.open("a", encoding="utf-8")
         self._proc = subprocess.Popen(
-            ["mosquitto", "-c", str(self.config_path), "-v"],
-            cwd=str(self.workspace),
+            ["mosquitto", "-c", str(self.config_path.resolve()), "-v"],
             stdout=log_fp,
             stderr=subprocess.STDOUT,
             text=True,

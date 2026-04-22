@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -13,6 +14,7 @@ from sdk import AputureSDK, DeviceCommandError, LightState
 from device_manager import DeviceListManager
 from batch_controller import BatchDeviceController
 from mqtt_server import MqttServerConfig, MqttServerManager
+from mqtt_monitor import MqttMonitor
 
 
 def _default_cidr_from_ip(ip: str) -> str:
@@ -29,6 +31,13 @@ def _get_server_manager() -> MqttServerManager:
     return st.session_state.mqtt_server_manager
 
 
+def _get_monitor() -> MqttMonitor:
+    if "mqtt_monitor" not in st.session_state:
+        store = Path(__file__).resolve().parent / ".mqtt_server" / "devices.json"
+        st.session_state.mqtt_monitor = MqttMonitor(str(store))
+    return st.session_state.mqtt_monitor
+
+
 def show_mqtt_status_panel(cfg: ControllerConfig) -> None:
     st.sidebar.subheader("MQTT Server 状态")
     mgr = _get_server_manager()
@@ -42,123 +51,450 @@ def show_mqtt_status_panel(cfg: ControllerConfig) -> None:
 
 
 def show_mqtt_dialog_tab(cfg: ControllerConfig) -> None:
-    st.subheader("MQTT 对话框（Server 管理）")
+    st.subheader("MQTT 对话框（Server 管理 + 监控）")
     mgr = _get_server_manager()
+    mon = _get_monitor()
 
-    st.markdown("**服务器日志显示框**")
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c1:
-        refresh = st.button("刷新日志", key="mqtt_server_refresh")
-    with c2:
-        if st.button("清空日志", key="mqtt_server_clear_log"):
-            mgr.log_path.write_text("", encoding="utf-8")
-            st.info("已清空日志")
-    with c3:
-        max_lines = st.number_input("显示行数", min_value=20, max_value=1000, value=200, step=20, key="mqtt_server_log_lines")
+    # ── 功能子标签 ──────────────────────────────────────────────────
+    sub_server, sub_monitor, sub_devices, sub_cmd, sub_registry = st.tabs([
+        "🖥 Server 控制",
+        "📡 监控连接 & 消息",
+        "🟢 在线设备",
+        "📤 命令下发",
+        "📋 设备台账",
+    ])
 
-    if refresh or True:
-        logs = mgr.tail_logs(max_lines=int(max_lines))
-        st.text_area("Server Logs", value=logs or "(暂无日志)", height=260, key="mqtt_server_log_text")
-
-    st.markdown("**Server 控制框**")
-    listener_host = st.text_input("监听地址", value=cfg.mqtt_host, key="mqtt_server_host")
-    listener_port = st.number_input("监听端口", min_value=1, max_value=65535, value=int(cfg.mqtt_port), step=1, key="mqtt_server_port")
-    allow_anonymous = st.checkbox("允许匿名连接", value=False, key="mqtt_server_allow_anon")
-    password_file = st.text_input("密码文件（可选）", value="", key="mqtt_server_password_file")
-    acl_file = st.text_input("ACL 文件（可选）", value=str(mgr.workspace / "mosquitto.acl"), key="mqtt_server_acl_file")
-
-    st.markdown("**TLS 配置（建议按 server.md 使用 8883 + TLSv1.2）**")
-    tls_enabled = st.checkbox("启用 TLS", value=True, key="mqtt_server_tls_enabled")
-    cafile = st.text_input("CA 文件", value="/etc/emqx/certs/ca.crt", key="mqtt_server_cafile")
-    certfile = st.text_input("服务端证书", value="/etc/emqx/certs/server.crt", key="mqtt_server_certfile")
-    keyfile = st.text_input("服务端私钥", value="/etc/emqx/certs/server.key", key="mqtt_server_keyfile")
-
-    st.markdown("**设备 ACL 生成（ClientId: aputure-{mac}）**")
-    mac_lines = st.text_area(
-        "MAC 列表（每行一个，12位hex或带冒号）",
-        value="112233aabbcc",
-        height=100,
-        key="mqtt_server_mac_list",
-    )
-    if st.button("生成 ACL 文件", key="mqtt_server_gen_acl"):
-        macs = [x.strip() for x in mac_lines.splitlines() if x.strip()]
-        target = mgr.write_acl_from_macs(macs, out_path=acl_file if acl_file.strip() else None)
-        st.success(f"ACL 已生成: {target}")
-
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        if st.button("启动 Server", key="mqtt_server_start"):
-            ok, msg = mgr.start(
-                MqttServerConfig(
-                    listener_host=listener_host,
-                    listener_port=int(listener_port),
-                    allow_anonymous=allow_anonymous,
-                    password_file=password_file,
-                    acl_file=acl_file,
-                    tls_enabled=tls_enabled,
-                    cafile=cafile,
-                    certfile=certfile,
-                    keyfile=keyfile,
-                )
+    # ================================================================
+    # 子标签 1: Server 控制
+    # ================================================================
+    with sub_server:
+        st.markdown("**服务器日志**")
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            refresh = st.button("刷新日志", key="mqtt_server_refresh")
+        with c2:
+            if st.button("清空日志", key="mqtt_server_clear_log"):
+                mgr.log_path.write_text("", encoding="utf-8")
+                st.info("已清空日志")
+        with c3:
+            max_lines = st.number_input(
+                "显示行数", min_value=20, max_value=1000, value=200, step=20, key="mqtt_server_log_lines"
             )
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
-    with s2:
-        if st.button("停止 Server", key="mqtt_server_stop"):
-            ok, msg = mgr.stop()
-            if ok:
-                st.info(msg)
-            else:
-                st.error(msg)
-    with s3:
-        if st.button("重启 Server", key="mqtt_server_restart"):
-            mgr.stop()
-            ok, msg = mgr.start(
-                MqttServerConfig(
-                    listener_host=listener_host,
-                    listener_port=int(listener_port),
-                    allow_anonymous=allow_anonymous,
-                    password_file=password_file,
-                    acl_file=acl_file,
-                    tls_enabled=tls_enabled,
-                    cafile=cafile,
-                    certfile=certfile,
-                    keyfile=keyfile,
-                )
+
+        if refresh or True:
+            logs = mgr.tail_logs(max_lines=int(max_lines))
+            st.text_area(
+                "Server Logs", value=logs or "(暂无日志)", height=260, key="mqtt_server_log_text"
             )
-            if ok:
-                st.success(msg)
-            else:
-                st.error(msg)
-    with s4:
-        if st.button("检测监听", key="mqtt_server_probe"):
-            ok, msg = mgr.check_listener(listener_host, int(listener_port))
-            if ok:
-                st.success(msg)
-            else:
-                st.warning(msg)
 
-    st.caption(f"当前状态: {mgr.status_text()}")
+        st.markdown("**Server 参数**")
+        listener_host = st.text_input("监听地址", value=cfg.mqtt_host, key="mqtt_server_host")
+        listener_port = st.number_input(
+            "监听端口", min_value=1, max_value=65535, value=int(cfg.mqtt_port), step=1, key="mqtt_server_port"
+        )
+        allow_anonymous = st.checkbox("允许匿名连接", value=False, key="mqtt_server_allow_anon")
+        password_file = st.text_input("密码文件（可选）", value="", key="mqtt_server_password_file")
+        acl_file = st.text_input(
+            "ACL 文件（可选）",
+            value=str(mgr.workspace / "mosquitto.acl"),
+            key="mqtt_server_acl_file",
+        )
 
-    st.markdown("**预设 Server 参数**")
-    p1, p2, p3 = st.columns(3)
-    with p1:
-        if st.button("预设：本机调试 127.0.0.1:1883", key="mqtt_server_preset_local"):
-            st.session_state.mqtt_server_host = "127.0.0.1"
-            st.session_state.mqtt_server_port = 1883
+        st.markdown("**TLS 配置（建议 server.md 规范：8883 + TLSv1.2）**")
+        tls_enabled = st.checkbox("启用 TLS", value=True, key="mqtt_server_tls_enabled")
+        cafile = st.text_input("CA 文件", value="/etc/emqx/certs/ca.crt", key="mqtt_server_cafile")
+        certfile = st.text_input("服务端证书", value="/etc/emqx/certs/server.crt", key="mqtt_server_certfile")
+        keyfile = st.text_input("服务端私钥", value="/etc/emqx/certs/server.key", key="mqtt_server_keyfile")
+        local_plain_port = st.number_input(
+            "本地裸连端口（内部监控用，0=不开启）",
+            min_value=0, max_value=65535, value=1883, step=1,
+            help="TLS 启用时，额外在 127.0.0.1 开启此端口供本机监控客户端免 TLS 连接",
+            key="mqtt_server_local_plain_port",
+        )
+
+        st.markdown("**设备 ACL 生成（ClientId: aputure-{mac}）**")
+        mac_lines = st.text_area(
+            "MAC 列表（每行一个，12位hex或带冒号）",
+            value="112233aabbcc",
+            height=100,
+            key="mqtt_server_mac_list",
+        )
+        if st.button("生成 ACL 文件", key="mqtt_server_gen_acl"):
+            macs = [x.strip() for x in mac_lines.splitlines() if x.strip()]
+            target = mgr.write_acl_from_macs(macs, out_path=acl_file if acl_file.strip() else None)
+            st.success(f"ACL 已生成: {target}")
+
+        def _build_server_cfg() -> MqttServerConfig:
+            return MqttServerConfig(
+                listener_host=listener_host,
+                listener_port=int(listener_port),
+                allow_anonymous=allow_anonymous,
+                password_file=password_file,
+                acl_file=acl_file,
+                tls_enabled=tls_enabled,
+                cafile=cafile,
+                certfile=certfile,
+                keyfile=keyfile,
+                local_plain_port=int(local_plain_port),
+            )
+
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            if st.button("启动 Server", key="mqtt_server_start"):
+                ok, msg = mgr.start(_build_server_cfg())
+                st.success(msg) if ok else st.error(msg)
+        with s2:
+            if st.button("停止 Server", key="mqtt_server_stop"):
+                ok, msg = mgr.stop()
+                st.info(msg) if ok else st.error(msg)
+        with s3:
+            if st.button("重启 Server", key="mqtt_server_restart"):
+                mgr.stop()
+                ok, msg = mgr.start(_build_server_cfg())
+                st.success(msg) if ok else st.error(msg)
+        with s4:
+            if st.button("检测监听", key="mqtt_server_probe"):
+                ok, msg = mgr.check_listener(listener_host, int(listener_port))
+                st.success(msg) if ok else st.warning(msg)
+
+        st.caption(f"当前状态: {mgr.status_text()}")
+
+        st.markdown("**预设参数**")
+        p1, p2, p3 = st.columns(3)
+        with p1:
+            if st.button("本机调试 127.0.0.1:1883", key="mqtt_server_preset_local"):
+                st.session_state.mqtt_server_host = "127.0.0.1"
+                st.session_state.mqtt_server_port = 1883
+                st.rerun()
+        with p2:
+            if st.button("局域网 0.0.0.0:1883", key="mqtt_server_preset_lan"):
+                st.session_state.mqtt_server_host = "0.0.0.0"
+                st.session_state.mqtt_server_port = 1883
+                st.rerun()
+        with p3:
+            if st.button("MQTTS 0.0.0.0:8883", key="mqtt_server_preset_mqtts"):
+                st.session_state.mqtt_server_host = "0.0.0.0"
+                st.session_state.mqtt_server_port = 8883
+                st.rerun()
+
+    # ================================================================
+    # 子标签 2: 监控连接 & 消息记录
+    # ================================================================
+    with sub_monitor:
+        st.markdown("**监控客户端连接（订阅设备上报）**")
+        m_host = st.text_input("Broker 地址", value="127.0.0.1", key="mon_host")
+        m_port = st.number_input("Broker 端口", min_value=1, max_value=65535, value=1883, step=1, key="mon_port")
+        m_user = st.text_input("用户名（可选）", value="", key="mon_user")
+        m_pass = st.text_input("密码（可选）", value="", type="password", key="mon_pass")
+        m_tls = st.checkbox("启用 TLS", value=False, key="mon_tls")
+
+        mc1, mc2, mc3 = st.columns(3)
+        with mc1:
+            if st.button("连接监控", key="mon_connect"):
+                ok, msg = mon.connect(
+                    host=m_host,
+                    port=int(m_port),
+                    username=m_user,
+                    password=m_pass,
+                    use_tls=m_tls,
+                )
+                st.success(msg) if ok else st.error(msg)
+        with mc2:
+            if st.button("断开监控", key="mon_disconnect"):
+                ok, msg = mon.disconnect()
+                st.info(msg) if ok else st.error(msg)
+        with mc3:
+            if st.button("测试连通性", key="mon_ping"):
+                ok, msg = mon.connect(
+                    host=m_host, port=int(m_port), username=m_user,
+                    password=m_pass, use_tls=m_tls, timeout_s=2.0,
+                )
+                if ok:
+                    st.success(f"✅ Broker 可连接: {msg}")
+                    # 若只是测试，立刻断开
+                else:
+                    st.error(f"❌ 无法连接: {msg}")
+
+        st.caption(f"监控状态: {mon.status_text()}")
+        st.caption(f"$SYS 统计: 在线客户端={mon.sys_stats.get('broker/clients/connected', '?')}  "
+                   f"总连接={mon.sys_stats.get('broker/clients/total', '?')}")
+
+        st.divider()
+        st.markdown("**消息记录（TX / RX）**")
+        msg_limit = st.number_input("显示条数", min_value=10, max_value=500, value=50, step=10, key="mon_msg_limit")
+        if st.button("刷新消息", key="mon_refresh_msgs"):
+            pass  # 触发重渲染
+
+        msgs = mon.get_messages(int(msg_limit))
+        if msgs:
+            rows = [
+                {
+                    "时间": m.ts,
+                    "方向": "⬆ TX" if m.direction == "tx" else "⬇ RX",
+                    "主题": m.topic,
+                    "内容": m.payload[:120] + ("..." if len(m.payload) > 120 else ""),
+                }
+                for m in msgs
+            ]
+            st.dataframe(rows, use_container_width=True)
+        else:
+            st.info("暂无消息，请先连接监控客户端并等待设备上报")
+
+        if st.button("清空消息记录", key="mon_clear_msgs"):
+            mon.messages.clear()
+            st.info("消息记录已清空")
+
+    # ================================================================
+    # 子标签 3: 在线设备
+    # ================================================================
+    with sub_devices:
+        st.markdown("**在线设备列表**")
+        col_r, col_mo = st.columns([1, 1])
+        with col_r:
+            if st.button("刷新", key="dev_refresh"):
+                pass
+        with col_mo:
+            if st.button("全部标记离线", key="dev_all_offline"):
+                mon.mark_all_offline()
+                st.info("已将所有设备标记为离线")
+
+        devices = mon.get_devices()
+        if devices:
+            rows = [
+                {
+                    "MAC": r.mac,
+                    "ClientId": r.client_id,
+                    "状态": "🟢 在线" if r.status == "online" else "⚫ 离线",
+                    "最后在线": r.last_seen,
+                    "固件": r.firmware_ver,
+                    "分组": r.group_id,
+                    "备注": r.remark,
+                    "最近上报": r.last_report[:60] + ("..." if len(r.last_report) > 60 else ""),
+                }
+                for r in devices
+            ]
+            st.dataframe(rows, use_container_width=True)
+            st.caption(f"共 {len(devices)} 台设备，其中在线 {mon.get_online_count()} 台")
+        else:
+            st.info("设备台账为空，连接监控后设备上报消息时会自动入库，也可在「设备台账」手动添加")
+
+    # ================================================================
+    # 子标签 4: 命令下发
+    # ================================================================
+    with sub_cmd:
+        st.markdown("**向设备发布 MQTT 命令**")
+        st.caption("按 server.md/HOST_NETWORK_PROTOCOL_REQUIREMENTS.md：灯光走 /down，倒计时走 /timer（必须带 cmd 字段）")
+
+        devices_list = mon.get_devices()
+        mac_options = [r.mac for r in devices_list] if devices_list else []
+
+        # 目标 MAC 选择
+        cmd_target_mode = st.radio(
+            "目标设备", options=["手动输入", "从台账选择"], horizontal=True, key="cmd_target_mode"
+        )
+        if cmd_target_mode == "从台账选择" and mac_options:
+            cmd_mac = st.selectbox("选择 MAC", options=mac_options, key="cmd_mac_select")
+        else:
+            cmd_mac = st.text_input("MAC（12位hex）", value="112233aabbcc", key="cmd_mac_input")
+
+        cmd_mac_clean = str(cmd_mac).replace(":", "").replace("-", "").lower()
+
+        # 预设主题
+        preset_topics = {
+            "自定义": "",
+            f"个别下发 iot/device/{cmd_mac_clean}/down": f"iot/device/{cmd_mac_clean}/down",
+            f"定时下发 iot/device/{cmd_mac_clean}/timer": f"iot/device/{cmd_mac_clean}/timer",
+            "群组下发 iot/device/group/down": "iot/device/group/down",
+            "全体下发 iot/device/all/down": "iot/device/all/down",
+        }
+        topic_preset = st.selectbox("主题预设", options=list(preset_topics.keys()), key="cmd_topic_preset")
+        default_topic = preset_topics[topic_preset] or f"iot/device/{cmd_mac_clean}/down"
+        if "cmd_topic_last_preset" not in st.session_state:
+            st.session_state.cmd_topic_last_preset = topic_preset
+            if "cmd_topic" not in st.session_state:
+                st.session_state.cmd_topic = default_topic
+        if topic_preset != st.session_state.cmd_topic_last_preset and topic_preset != "自定义":
+            st.session_state.cmd_topic = default_topic
+        st.session_state.cmd_topic_last_preset = topic_preset
+        cmd_topic = st.text_input("发布主题", value=default_topic, key="cmd_topic")
+
+        # 预设命令 payload
+        preset_payloads = {
+            "自定义": "",
+            "开灯 power=true": '{"power":true}',
+            "关灯 power=false": '{"power":false}',
+            "亮度 50%": '{"lightness":50.0}',
+            "定时-添加(add_timer)": (
+                '{"cmd":"add_timer","task_id":101,"type":"once",'
+                '"trigger_time":"2026-04-21T23:00:00","power":true,"lightness":75}'
+            ),
+            "定时-移除(remove_timer)": '{"cmd":"remove_timer","task_id":101}',
+            "定时-查询(query_timer)": '{"cmd":"query_timer","task_id":101}',
+            "定时-列表(list_timer)": '{"cmd":"list_timer"}',
+            "定时-统计(stats_timer)": '{"cmd":"stats_timer"}',
+            "定时-清空(clear_timer)": '{"cmd":"clear_timer"}',
+        }
+        payload_preset = st.selectbox("Payload 预设", options=list(preset_payloads.keys()), key="cmd_payload_preset")
+        default_payload = preset_payloads[payload_preset] if preset_payloads[payload_preset] else '{"power":true}'
+        if "cmd_payload_last_preset" not in st.session_state:
+            st.session_state.cmd_payload_last_preset = payload_preset
+            if "cmd_payload" not in st.session_state:
+                st.session_state.cmd_payload = default_payload
+        if payload_preset != st.session_state.cmd_payload_last_preset and payload_preset != "自定义":
+            st.session_state.cmd_payload = default_payload
+        st.session_state.cmd_payload_last_preset = payload_preset
+        cmd_payload = st.text_area("Payload (JSON)", value=default_payload, height=100, key="cmd_payload")
+        cmd_qos = st.selectbox("QoS", options=[0, 1, 2], index=1, key="cmd_qos")
+
+        if st.button("发布命令", key="cmd_publish"):
+            if not mon.is_connected():
+                st.error("监控客户端未连接，请先在「监控连接」标签连接到 Broker")
+            else:
+                # JSON 有效性校验
+                try:
+                    parsed = json.loads(cmd_payload)
+                except Exception as exc:
+                    st.error(f"Payload 不是合法 JSON: {exc}")
+                    parsed = None
+
+                if parsed is not None and not isinstance(parsed, dict):
+                    st.error("Payload 必须是 JSON 对象")
+                elif parsed is not None:
+                    is_timer_topic = str(cmd_topic).strip().endswith("/timer")
+                    if is_timer_topic:
+                        cmd = str(parsed.get("cmd", "")).strip()
+                        valid_cmds = {
+                            "add_timer", "remove_timer", "clear_timer", "query_timer", "list_timer", "stats_timer"
+                        }
+                        if cmd not in valid_cmds:
+                            st.error("/timer 主题必须包含 cmd，且只能是: add_timer/remove_timer/clear_timer/query_timer/list_timer/stats_timer")
+                        elif cmd == "add_timer":
+                            required = ["task_id", "type", "trigger_time"]
+                            missing = [k for k in required if k not in parsed]
+                            state_keys = {"power", "mode", "level", "lightness", "cct", "gm", "hue", "sat", "x", "y"}
+                            has_state = any(k in parsed for k in state_keys)
+                            if missing:
+                                st.error(f"add_timer 缺少字段: {', '.join(missing)}")
+                            elif not has_state:
+                                st.error("add_timer 至少包含一个状态字段: power/mode/level/lightness/cct/gm/hue/sat/x/y")
+                            else:
+                                ok, msg = mon.publish(cmd_topic, cmd_payload, qos=int(cmd_qos))
+                                st.success(msg) if ok else st.error(msg)
+                        else:
+                            ok, msg = mon.publish(cmd_topic, cmd_payload, qos=int(cmd_qos))
+                            st.success(msg) if ok else st.error(msg)
+                    else:
+                        ok, msg = mon.publish(cmd_topic, cmd_payload, qos=int(cmd_qos))
+                        st.success(msg) if ok else st.error(msg)
+
+        st.divider()
+        st.markdown("**批量发布（逐 MAC 下发）**")
+        batch_macs_raw = st.text_area(
+            "MAC 列表（每行一个）", value="\n".join(mac_options[:5]) if mac_options else "112233aabbcc", height=100, key="cmd_batch_macs"
+        )
+        batch_topic_tpl = st.text_input(
+            "主题模板（用 {mac} 占位）", value="iot/device/{mac}/down", key="cmd_batch_topic_tpl"
+        )
+        batch_payload = st.text_area("Payload", value='{"power":true}', height=80, key="cmd_batch_payload")
+        if st.button("批量发布", key="cmd_batch_publish"):
+            if not mon.is_connected():
+                st.error("监控客户端未连接")
+            else:
+                batch_macs = [x.strip() for x in batch_macs_raw.splitlines() if x.strip()]
+                results = []
+                for bm in batch_macs:
+                    bm_clean = bm.replace(":", "").replace("-", "").lower()
+                    topic = batch_topic_tpl.replace("{mac}", bm_clean)
+                    ok, msg = mon.publish(topic, batch_payload, qos=1)
+                    results.append({"mac": bm_clean, "topic": topic, "ok": ok, "msg": msg})
+                st.json(results)
+
+    # ================================================================
+    # 子标签 5: 设备台账
+    # ================================================================
+    with sub_registry:
+        st.markdown("**设备台账管理**（入库、编辑、删除）")
+
+        devices = mon.get_devices()
+        if devices:
+            rows = [
+                {
+                    "MAC": r.mac,
+                    "ClientId": r.client_id,
+                    "SN": r.device_sn,
+                    "固件": r.firmware_ver,
+                    "分组": r.group_id,
+                    "备注": r.remark,
+                    "状态": r.status,
+                    "最后在线": r.last_seen,
+                }
+                for r in devices
+            ]
+            st.dataframe(rows, use_container_width=True)
+        else:
+            st.info("台账为空")
+
+        st.divider()
+        st.markdown("**添加 / 更新设备**")
+        reg_mac = st.text_input("MAC（必填，12位hex或带冒号）", value="112233aabbcc", key="reg_mac")
+        reg_sn = st.text_input("设备 SN", value="", key="reg_sn")
+        reg_fw = st.text_input("固件版本", value="", key="reg_fw")
+        reg_group = st.text_input("分组 ID", value="", key="reg_group")
+        reg_remark = st.text_input("备注", value="", key="reg_remark")
+
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            if st.button("保存设备", key="reg_save"):
+                rec = mon.add_device(
+                    mac=reg_mac,
+                    device_sn=reg_sn,
+                    firmware_ver=reg_fw,
+                    group_id=reg_group,
+                    remark=reg_remark,
+                )
+                st.success(f"已保存: {rec.client_id}")
+                st.rerun()
+        with rc2:
+            if st.button("删除设备", key="reg_delete"):
+                ok = mon.remove_device(reg_mac)
+                st.success(f"已删除: {reg_mac}") if ok else st.warning("未找到该设备")
+                st.rerun()
+
+        st.divider()
+        st.markdown("**从 CSV 批量导入**（列：mac, device_sn, firmware_ver, group_id, remark）")
+        csv_content = st.text_area("CSV 内容（含表头）", height=120, key="reg_csv",
+                                   value="mac,device_sn,firmware_ver,group_id,remark\n112233aabbcc,SN001,v1.0,group1,test")
+        if st.button("导入 CSV", key="reg_csv_import"):
+            import csv, io
+            reader = csv.DictReader(io.StringIO(csv_content))
+            count = 0
+            for row in reader:
+                mac = row.get("mac", "").strip()
+                if not mac:
+                    continue
+                mon.add_device(
+                    mac=mac,
+                    device_sn=row.get("device_sn", "").strip(),
+                    firmware_ver=row.get("firmware_ver", "").strip(),
+                    group_id=row.get("group_id", "").strip(),
+                    remark=row.get("remark", "").strip(),
+                )
+                count += 1
+            st.success(f"已导入 {count} 条设备记录")
             st.rerun()
-    with p2:
-        if st.button("预设：局域网 0.0.0.0:1883", key="mqtt_server_preset_lan"):
-            st.session_state.mqtt_server_host = "0.0.0.0"
-            st.session_state.mqtt_server_port = 1883
-            st.rerun()
-    with p3:
-        if st.button("预设：MQTTS 0.0.0.0:8883", key="mqtt_server_preset_mqtts"):
-            st.session_state.mqtt_server_host = "0.0.0.0"
-            st.session_state.mqtt_server_port = 8883
-            st.rerun()
+
+        st.divider()
+        store_path = str(mon.store_path)
+        st.caption(f"台账文件: {store_path}")
+        if st.button("导出 JSON", key="reg_export"):
+            data = {r.mac: r.__dict__ for r in mon.get_devices()}
+            st.download_button(
+                "下载 devices.json",
+                data=json.dumps(data, ensure_ascii=False, indent=2),
+                file_name="devices.json",
+                mime="application/json",
+                key="reg_download",
+            )
 
 
 def build_config() -> ControllerConfig:

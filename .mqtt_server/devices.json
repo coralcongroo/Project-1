@@ -1,0 +1,26 @@
+{
+  "112233aabbcc": {
+    "mac": "112233aabbcc",
+    "client_id": "aputure-112233aabbcc",
+    "group_id": "group1",
+    "firmware_ver": "v1.0",
+    "device_sn": "DEV001",
+    "remark": "示例设备1",
+    "status": "online",
+    "last_seen": "2026-04-22 17:01:28",
+    "last_report": "{\"mac\": \"112233aabbcc\", \"echo\": \"iot/device/112233aabbcc/timer\"}",
+    "extra": {}
+  },
+  "aabbccdd1122": {
+    "mac": "aabbccdd1122",
+    "client_id": "aputure-aabbccdd1122",
+    "group_id": "group1",
+    "firmware_ver": "v1.0",
+    "device_sn": "DEV002",
+    "remark": "示例设备2",
+    "status": "offline",
+    "last_seen": "",
+    "last_report": "",
+    "extra": {}
+  }
+}
