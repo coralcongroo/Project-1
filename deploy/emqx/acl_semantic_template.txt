@@ -1,0 +1,11 @@
+# ACL 语义模板（单设备示例）
+# subject: clientid = aputure-112233aabbcc
+allow subscribe iot/device/112233aabbcc/down
+allow subscribe iot/device/112233aabbcc/timer
+allow subscribe iot/device/group/down
+allow subscribe iot/device/group/timer
+allow subscribe iot/device/all/down
+allow subscribe iot/device/all/timer
+allow publish   report/data
+allow publish   iot/device/112233aabbcc/timer_reply
+deny  all

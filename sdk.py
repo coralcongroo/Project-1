@@ -17,6 +17,10 @@ class DeviceCommandError(SDKError):
     pass
 
 
+class UnsupportedModeError(SDKError):
+    pass
+
+
 @dataclass
 class LightState:
     power: Optional[bool] = None
@@ -71,95 +75,74 @@ class AputureSDK:
         self.task_map: Dict[int, TimerTask] = {}
 
     def connect(self) -> None:
-        self.controller.connect_mqtt()
+        # Server-only mode: MQTT client connection disabled
+        return None
 
     def disconnect(self) -> None:
-        self.controller.disconnect_mqtt()
+        # Server-only mode: MQTT client connection disabled
+        return None
 
     def set_light(self, state: LightState) -> None:
-        self.controller.send_light_control(state.to_payload())
+        raise UnsupportedModeError("当前为 MQTT Server 模式，SDK 不提供 MQTT 客户端控灯")
 
     def create_timer(
         self,
         timer_type: str,
         trigger_time: str,
         state: LightState,
-        transport: str = "mqtt",
+        transport: str = "udp",
         task_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         tid = task_id if task_id is not None else self.task_id_gen.next_id()
         task = TimerTask(task_id=tid, timer_type=timer_type, trigger_time=trigger_time, state=state)
 
-        if transport == "mqtt":
-            result = self.controller.add_timer_mqtt(
-                task_id=task.task_id,
-                timer_type=task.timer_type,
-                trigger_time=task.trigger_time,
-                **task.state.to_payload(),
-            )
-        elif transport == "udp":
+        if transport == "udp":
             result = self.controller.send_timer_command_udp("add_timer", payload=task.to_payload())
         else:
-            raise ValueError("transport 仅支持 mqtt/udp")
+            raise UnsupportedModeError("当前模式仅支持 UDP")
 
         self._ensure_ok("add_timer", result)
         if result.get("result") == "ok":
             self.task_map[tid] = task
         return result
 
-    def remove_timer(self, task_id: int, transport: str = "mqtt") -> Dict[str, Any]:
-        if transport == "mqtt":
-            result = self.controller.remove_timer_mqtt(task_id)
-        elif transport == "udp":
+    def remove_timer(self, task_id: int, transport: str = "udp") -> Dict[str, Any]:
+        if transport == "udp":
             result = self.controller.send_timer_command_udp("remove_timer", payload={"task_id": task_id})
         else:
-            raise ValueError("transport 仅支持 mqtt/udp")
+            raise UnsupportedModeError("当前模式仅支持 UDP")
 
         self._ensure_ok("remove_timer", result)
         if result.get("result") == "ok":
             self.task_map.pop(task_id, None)
         return result
 
-    def query_timer(self, task_id: int, transport: str = "mqtt") -> Dict[str, Any]:
-        if transport == "mqtt":
-            result = self.controller.query_timer_mqtt(task_id)
-            self._ensure_ok("query_timer", result)
-            return result
+    def query_timer(self, task_id: int, transport: str = "udp") -> Dict[str, Any]:
         if transport == "udp":
             result = self.controller.send_timer_command_udp("query_timer", payload={"task_id": task_id})
             self._ensure_ok("query_timer", result)
             return result
-        raise ValueError("transport 仅支持 mqtt/udp")
+        raise UnsupportedModeError("当前模式仅支持 UDP")
 
-    def list_timers(self, transport: str = "mqtt") -> Dict[str, Any]:
-        if transport == "mqtt":
-            result = self.controller.list_timer_mqtt()
-            self._ensure_ok("list_timer", result)
-            return result
+    def list_timers(self, transport: str = "udp") -> Dict[str, Any]:
         if transport == "udp":
             result = self.controller.send_timer_command_udp("list_timer")
             self._ensure_ok("list_timer", result)
             return result
-        raise ValueError("transport 仅支持 mqtt/udp")
+        raise UnsupportedModeError("当前模式仅支持 UDP")
 
-    def stats_timers(self, transport: str = "mqtt") -> Dict[str, Any]:
-        if transport == "mqtt":
-            result = self.controller.stats_timer_mqtt()
-            self._ensure_ok("stats_timer", result)
-            return result
+    def stats_timers(self, transport: str = "udp") -> Dict[str, Any]:
         if transport == "udp":
             result = self.controller.send_timer_command_udp("stats_timer")
             self._ensure_ok("stats_timer", result)
             return result
-        raise ValueError("transport 仅支持 mqtt/udp")
+        raise UnsupportedModeError("当前模式仅支持 UDP")
 
-    def clear_timers(self, transport: str = "mqtt") -> Dict[str, Any]:
-        if transport == "mqtt":
-            result = self.controller.clear_timer_mqtt()
-        elif transport == "udp":
+    def clear_timers(self, transport: str = "udp") -> Dict[str, Any]:
+        if transport == "udp":
             result = self.controller.send_timer_command_udp("clear_timer")
         else:
-            raise ValueError("transport 仅支持 mqtt/udp")
+            raise UnsupportedModeError("当前模式仅支持 UDP")
 
         self._ensure_ok("clear_timer", result)
         if result.get("result") == "ok":
@@ -169,7 +152,7 @@ class AputureSDK:
     def batch_create_timers(
         self,
         items: List[Tuple[str, str, LightState]],
-        transport: str = "mqtt",
+        transport: str = "udp",
         retries: int = 2,
         retry_delay: float = 0.3,
         rollback_on_error: bool = True,
@@ -222,7 +205,7 @@ class AputureSDK:
     def batch_remove_timers(
         self,
         task_ids: List[int],
-        transport: str = "mqtt",
+        transport: str = "udp",
         retries: int = 2,
         retry_delay: float = 0.3,
     ) -> Dict[str, Any]:

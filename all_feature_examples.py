@@ -10,31 +10,9 @@ CFG = ControllerConfig(
 )
 
 
-def example_mqtt_light_control() -> None:
-    """MQTT 灯光控制：上电 + CCT 模式。"""
-    ctl = AputureController(CFG)
-    ctl.connect_mqtt()
-    try:
-        ctl.send_light_control({"power": True, "mode": "cct", "lightness": 70, "cct": 4500})
-        ctl.send_light_control({"mode": "hsi", "hue": 200, "sat": 80, "lightness": 60})
-        ctl.send_light_control({"mode": "xy", "x": 0.31, "y": 0.33, "lightness": 55})
-    finally:
-        ctl.disconnect_mqtt()
-
-
-def example_mqtt_timer_commands() -> None:
-    """MQTT 倒计时：add/query/list/stats/remove/clear。"""
-    ctl = AputureController(CFG)
-    ctl.connect_mqtt()
-    try:
-        print("add:", ctl.add_timer_mqtt(101, "once", "2026-04-21T23:00:00", power=True, mode="cct", lightness=75, cct=4300))
-        print("query:", ctl.query_timer_mqtt(101))
-        print("list:", ctl.list_timer_mqtt())
-        print("stats:", ctl.stats_timer_mqtt())
-        print("remove:", ctl.remove_timer_mqtt(101))
-        print("clear:", ctl.clear_timer_mqtt())
-    finally:
-        ctl.disconnect_mqtt()
+def example_mqtt_server_mode_note() -> None:
+    """MQTT 已切换为 Server 模式，不再提供 MQTT 客户端示例。"""
+    print("当前为 MQTT Server 模式：请在 UI 的 MQTT 标签页中管理 Server 进程")
 
 
 def example_udp_timer_commands() -> None:
@@ -93,31 +71,25 @@ def example_ble_tlv_and_crc() -> None:
 
 
 def example_sdk_basic() -> None:
-    """SDK 基础流程：连接、控灯、建任务、查询、断开。"""
+    """SDK 基础流程：UDP 建任务、查询。"""
     sdk = AputureSDK(CFG)
-    sdk.connect()
     try:
-        sdk.set_light(LightState(power=True, mode="cct", lightness=68, cct=4300))
-
         create_resp = sdk.create_timer(
             timer_type="once",
             trigger_time="2026-04-21T23:00:00",
             state=LightState(power=True, mode="cct", lightness=75, cct=4500),
-            transport="mqtt",
+            transport="udp",
         )
         print("sdk_create:", create_resp)
-        print("sdk_list:", sdk.list_timers("mqtt"))
-        print("sdk_stats:", sdk.stats_timers("mqtt"))
+        print("sdk_list:", sdk.list_timers("udp"))
+        print("sdk_stats:", sdk.stats_timers("udp"))
     except DeviceCommandError as exc:
         print("sdk_error:", exc)
-    finally:
-        sdk.disconnect()
 
 
 def example_sdk_batch() -> None:
     """SDK 批量：失败重试 + 可选回滚。"""
     sdk = AputureSDK(CFG)
-    sdk.connect()
     try:
         batch_items = [
             ("once", "2026-04-21T23:00:00", LightState(power=True, mode="cct", lightness=40, cct=3200)),
@@ -127,7 +99,7 @@ def example_sdk_batch() -> None:
 
         result = sdk.batch_create_timers(
             items=batch_items,
-            transport="mqtt",
+            transport="udp",
             retries=2,
             retry_delay=0.3,
             rollback_on_error=True,
@@ -136,11 +108,9 @@ def example_sdk_batch() -> None:
 
         task_ids = result.get("task_ids", [])
         if task_ids:
-            print("batch_remove:", sdk.batch_remove_timers(task_ids, transport="mqtt", retries=2))
+            print("batch_remove:", sdk.batch_remove_timers(task_ids, transport="udp", retries=2))
     except DeviceCommandError as exc:
         print("batch_error:", exc)
-    finally:
-        sdk.disconnect()
 
 
 def example_active_scan() -> None:
@@ -159,8 +129,7 @@ def example_active_scan() -> None:
 
 if __name__ == "__main__":
     # 按需取消注释运行
-    # example_mqtt_light_control()
-    # example_mqtt_timer_commands()
+    # example_mqtt_server_mode_note()
     # example_udp_timer_commands()
     # example_ambl_realtime_stream()
     # example_ble_tlv_and_crc()

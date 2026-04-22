@@ -41,31 +41,8 @@ class BatchDeviceController:
         timeout: float = 3.0,
         skip_errors: bool = True,
     ) -> Dict[str, Any]:
-        """对多个设备执行灯光控制"""
-        results: Dict[str, Any] = {}
-        for ip in ips:
-            try:
-                cfg = ControllerConfig(
-                    mac="00:00:00:00:00:00",
-                    device_ip=ip,
-                    mqtt_host=mqtt_host,
-                    mqtt_port=mqtt_port,
-                    mqtt_tls=mqtt_tls,
-                )
-                ctl = AputureController(cfg)
-                ctl.connect_mqtt()
-                try:
-                    ctl.send_light_control(state)
-                    results[ip] = {"result": "ok"}
-                finally:
-                    ctl.disconnect_mqtt()
-            except Exception as exc:
-                if skip_errors:
-                    results[ip] = {"result": "error", "message": str(exc)}
-                else:
-                    raise
-
-        return {"result": "batch_ok", "total": len(ips), "results": results}
+        """Server-only 模式下禁用 MQTT 客户端批量灯光"""
+        raise RuntimeError("当前为 MQTT Server 模式，已禁用 MQTT 客户端批量灯光")
 
     def batch_timer_command(
         self,

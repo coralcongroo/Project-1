@@ -35,16 +35,7 @@ def _print_result(result: Dict[str, Any]) -> None:
 
 
 def run_light(args: argparse.Namespace) -> None:
-    cfg = _build_config(args)
-    ctl = AputureController(cfg)
-    payload = _state_from_args(args)
-
-    ctl.connect_mqtt()
-    try:
-        ctl.send_light_control(payload)
-        print("ok")
-    finally:
-        ctl.disconnect_mqtt()
+    raise RuntimeError("已切换为 MQTT Server 模式，不再提供 MQTT 客户端 light 下发")
 
 
 def run_timer(args: argparse.Namespace) -> None:
@@ -52,14 +43,7 @@ def run_timer(args: argparse.Namespace) -> None:
     transport = args.transport
 
     if transport == "mqtt":
-        ctl = AputureController(cfg)
-        ctl.connect_mqtt()
-        try:
-            result = _run_timer_with_controller(ctl, args, transport)
-            _print_result(result)
-        finally:
-            ctl.disconnect_mqtt()
-        return
+        raise RuntimeError("已切换为 MQTT Server 模式，不再提供 MQTT 客户端 timer 下发")
 
     ctl = AputureController(cfg)
     result = _run_timer_with_controller(ctl, args, transport)
@@ -68,6 +52,9 @@ def run_timer(args: argparse.Namespace) -> None:
 
 def _run_timer_with_controller(ctl: AputureController, args: argparse.Namespace, transport: str) -> Dict[str, Any]:
     op = args.operation
+    if transport != "udp":
+        raise RuntimeError("当前模式仅支持 UDP")
+
     if op == "add":
         payload = {
             "task_id": args.task_id,
@@ -75,33 +62,21 @@ def _run_timer_with_controller(ctl: AputureController, args: argparse.Namespace,
             "trigger_time": args.trigger_time,
             **_state_from_args(args),
         }
-        if transport == "mqtt":
-            return ctl.add_timer_mqtt(args.task_id, args.type, args.trigger_time, **_state_from_args(args))
         return ctl.send_timer_command_udp("add_timer", payload)
 
     if op == "remove":
-        if transport == "mqtt":
-            return ctl.remove_timer_mqtt(args.task_id)
         return ctl.send_timer_command_udp("remove_timer", {"task_id": args.task_id})
 
     if op == "query":
-        if transport == "mqtt":
-            return ctl.query_timer_mqtt(args.task_id)
         return ctl.send_timer_command_udp("query_timer", {"task_id": args.task_id})
 
     if op == "list":
-        if transport == "mqtt":
-            return ctl.list_timer_mqtt()
         return ctl.send_timer_command_udp("list_timer")
 
     if op == "stats":
-        if transport == "mqtt":
-            return ctl.stats_timer_mqtt()
         return ctl.send_timer_command_udp("stats_timer")
 
     if op == "clear":
-        if transport == "mqtt":
-            return ctl.clear_timer_mqtt()
         return ctl.send_timer_command_udp("clear_timer")
 
     raise ValueError(f"unsupported timer operation: {op}")
@@ -146,18 +121,17 @@ def run_sdk_batch(args: argparse.Namespace) -> None:
             )
         )
 
-    sdk.connect()
-    try:
-        result = sdk.batch_create_timers(
-            items=items,
-            transport=args.transport,
-            retries=args.retries,
-            retry_delay=args.retry_delay,
-            rollback_on_error=(not args.no_rollback),
-        )
-        _print_result(result)
-    finally:
-        sdk.disconnect()
+    if args.transport == "mqtt":
+        raise RuntimeError("已切换为 MQTT Server 模式，不再提供 MQTT 客户端 batch-add")
+
+    result = sdk.batch_create_timers(
+        items=items,
+        transport=args.transport,
+        retries=args.retries,
+        retry_delay=args.retry_delay,
+        rollback_on_error=(not args.no_rollback),
+    )
+    _print_result(result)
 
 
 def run_scan(args: argparse.Namespace) -> None:
@@ -208,14 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Aputure IP Controller CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_light = sub.add_parser("light", help="MQTT 灯光控制")
-    add_common(p_light)
-    add_state_options(p_light)
-    p_light.set_defaults(func=run_light)
-
     p_timer = sub.add_parser("timer", help="倒计时命令")
     add_common(p_timer)
-    p_timer.add_argument("--transport", choices=["mqtt", "udp"], default="mqtt")
+    p_timer.add_argument("--transport", choices=["udp"], default="udp")
     p_timer.add_argument("operation", choices=["add", "remove", "query", "list", "stats", "clear"])
     p_timer.add_argument("--task-id", type=int)
     p_timer.add_argument("--type", choices=["once", "daily", "weekly"], default="once")
@@ -242,7 +211,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_batch = sub.add_parser("batch-add", help="SDK 批量创建倒计时")
     add_common(p_batch)
-    p_batch.add_argument("--transport", choices=["mqtt", "udp"], default="mqtt")
+    p_batch.add_argument("--transport", choices=["udp"], default="udp")
     p_batch.add_argument("--type", choices=["once", "daily", "weekly"], default="once")
     p_batch.add_argument("--trigger-times", nargs="+", required=True)
     p_batch.add_argument("--retries", type=int, default=2)

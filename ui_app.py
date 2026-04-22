@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 try:
@@ -11,6 +12,7 @@ from controller import AputureController, ControllerConfig
 from sdk import AputureSDK, DeviceCommandError, LightState
 from device_manager import DeviceListManager
 from batch_controller import BatchDeviceController
+from mqtt_server import MqttServerConfig, MqttServerManager
 
 
 def _default_cidr_from_ip(ip: str) -> str:
@@ -20,24 +22,157 @@ def _default_cidr_from_ip(ip: str) -> str:
     return "192.168.1.0/24"
 
 
+def _get_server_manager() -> MqttServerManager:
+    if "mqtt_server_manager" not in st.session_state:
+        workspace = Path(__file__).resolve().parent / ".mqtt_server"
+        st.session_state.mqtt_server_manager = MqttServerManager(str(workspace))
+    return st.session_state.mqtt_server_manager
+
+
+def show_mqtt_status_panel(cfg: ControllerConfig) -> None:
+    st.sidebar.subheader("MQTT Server 状态")
+    mgr = _get_server_manager()
+
+    st.sidebar.write(f"进程状态: {mgr.status_text()}")
+    ok, msg = mgr.check_listener(cfg.mqtt_host, int(cfg.mqtt_port))
+    if ok:
+        st.sidebar.success(f"监听检测: {msg}")
+    else:
+        st.sidebar.warning(f"监听检测: {msg}")
+
+
+def show_mqtt_dialog_tab(cfg: ControllerConfig) -> None:
+    st.subheader("MQTT 对话框（Server 管理）")
+    mgr = _get_server_manager()
+
+    st.markdown("**服务器日志显示框**")
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        refresh = st.button("刷新日志", key="mqtt_server_refresh")
+    with c2:
+        if st.button("清空日志", key="mqtt_server_clear_log"):
+            mgr.log_path.write_text("", encoding="utf-8")
+            st.info("已清空日志")
+    with c3:
+        max_lines = st.number_input("显示行数", min_value=20, max_value=1000, value=200, step=20, key="mqtt_server_log_lines")
+
+    if refresh or True:
+        logs = mgr.tail_logs(max_lines=int(max_lines))
+        st.text_area("Server Logs", value=logs or "(暂无日志)", height=260, key="mqtt_server_log_text")
+
+    st.markdown("**Server 控制框**")
+    listener_host = st.text_input("监听地址", value=cfg.mqtt_host, key="mqtt_server_host")
+    listener_port = st.number_input("监听端口", min_value=1, max_value=65535, value=int(cfg.mqtt_port), step=1, key="mqtt_server_port")
+    allow_anonymous = st.checkbox("允许匿名连接", value=False, key="mqtt_server_allow_anon")
+    password_file = st.text_input("密码文件（可选）", value="", key="mqtt_server_password_file")
+    acl_file = st.text_input("ACL 文件（可选）", value=str(mgr.workspace / "mosquitto.acl"), key="mqtt_server_acl_file")
+
+    st.markdown("**TLS 配置（建议按 server.md 使用 8883 + TLSv1.2）**")
+    tls_enabled = st.checkbox("启用 TLS", value=True, key="mqtt_server_tls_enabled")
+    cafile = st.text_input("CA 文件", value="/etc/emqx/certs/ca.crt", key="mqtt_server_cafile")
+    certfile = st.text_input("服务端证书", value="/etc/emqx/certs/server.crt", key="mqtt_server_certfile")
+    keyfile = st.text_input("服务端私钥", value="/etc/emqx/certs/server.key", key="mqtt_server_keyfile")
+
+    st.markdown("**设备 ACL 生成（ClientId: aputure-{mac}）**")
+    mac_lines = st.text_area(
+        "MAC 列表（每行一个，12位hex或带冒号）",
+        value="112233aabbcc",
+        height=100,
+        key="mqtt_server_mac_list",
+    )
+    if st.button("生成 ACL 文件", key="mqtt_server_gen_acl"):
+        macs = [x.strip() for x in mac_lines.splitlines() if x.strip()]
+        target = mgr.write_acl_from_macs(macs, out_path=acl_file if acl_file.strip() else None)
+        st.success(f"ACL 已生成: {target}")
+
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        if st.button("启动 Server", key="mqtt_server_start"):
+            ok, msg = mgr.start(
+                MqttServerConfig(
+                    listener_host=listener_host,
+                    listener_port=int(listener_port),
+                    allow_anonymous=allow_anonymous,
+                    password_file=password_file,
+                    acl_file=acl_file,
+                    tls_enabled=tls_enabled,
+                    cafile=cafile,
+                    certfile=certfile,
+                    keyfile=keyfile,
+                )
+            )
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    with s2:
+        if st.button("停止 Server", key="mqtt_server_stop"):
+            ok, msg = mgr.stop()
+            if ok:
+                st.info(msg)
+            else:
+                st.error(msg)
+    with s3:
+        if st.button("重启 Server", key="mqtt_server_restart"):
+            mgr.stop()
+            ok, msg = mgr.start(
+                MqttServerConfig(
+                    listener_host=listener_host,
+                    listener_port=int(listener_port),
+                    allow_anonymous=allow_anonymous,
+                    password_file=password_file,
+                    acl_file=acl_file,
+                    tls_enabled=tls_enabled,
+                    cafile=cafile,
+                    certfile=certfile,
+                    keyfile=keyfile,
+                )
+            )
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    with s4:
+        if st.button("检测监听", key="mqtt_server_probe"):
+            ok, msg = mgr.check_listener(listener_host, int(listener_port))
+            if ok:
+                st.success(msg)
+            else:
+                st.warning(msg)
+
+    st.caption(f"当前状态: {mgr.status_text()}")
+
+    st.markdown("**预设 Server 参数**")
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        if st.button("预设：本机调试 127.0.0.1:1883", key="mqtt_server_preset_local"):
+            st.session_state.mqtt_server_host = "127.0.0.1"
+            st.session_state.mqtt_server_port = 1883
+            st.rerun()
+    with p2:
+        if st.button("预设：局域网 0.0.0.0:1883", key="mqtt_server_preset_lan"):
+            st.session_state.mqtt_server_host = "0.0.0.0"
+            st.session_state.mqtt_server_port = 1883
+            st.rerun()
+    with p3:
+        if st.button("预设：MQTTS 0.0.0.0:8883", key="mqtt_server_preset_mqtts"):
+            st.session_state.mqtt_server_host = "0.0.0.0"
+            st.session_state.mqtt_server_port = 8883
+            st.rerun()
+
+
 def build_config() -> ControllerConfig:
     st.sidebar.header("设备配置")
     mac = st.sidebar.text_input("MAC", value="11:22:33:aa:bb:cc")
     device_ip = st.sidebar.text_input("设备 IP", value="192.168.1.100")
-    mqtt_host = st.sidebar.text_input("MQTT Host", value="broker.emqx.io")
-    mqtt_port = st.sidebar.number_input("MQTT Port", min_value=1, max_value=65535, value=8883, step=1)
-    mqtt_username = st.sidebar.text_input("MQTT 用户名", value="")
-    mqtt_password = st.sidebar.text_input("MQTT 密码", value="", type="password")
-    mqtt_tls = st.sidebar.checkbox("MQTT TLS", value=True)
+    mqtt_host = st.sidebar.text_input("MQTT Server 监听地址", value="0.0.0.0")
+    mqtt_port = st.sidebar.number_input("MQTT Server 监听端口", min_value=1, max_value=65535, value=8883, step=1)
 
     return ControllerConfig(
         mac=mac,
         device_ip=device_ip,
         mqtt_host=mqtt_host,
         mqtt_port=int(mqtt_port),
-        mqtt_username=mqtt_username,
-        mqtt_password=mqtt_password,
-        mqtt_tls=mqtt_tls,
     )
 
 
@@ -103,61 +238,55 @@ def build_state(prefix: str = "") -> Dict[str, Any]:
 
 def show_light_tab(cfg: ControllerConfig) -> None:
     st.subheader("MQTT 灯光控制")
-    with st.form("light_form"):
-        state = build_state("灯光_")
-        submitted = st.form_submit_button("发送")
-
-    if submitted:
-        ctl = AputureController(cfg)
-        try:
-            ctl.connect_mqtt()
-            ctl.send_light_control(state)
-            st.success("发送成功")
-        except Exception as exc:
-            st.error(str(exc))
-        finally:
-            ctl.disconnect_mqtt()
+    st.warning("当前为 MQTT Server 模式，已禁用 MQTT 客户端控灯")
 
 
-def show_timer_tab(cfg: ControllerConfig) -> None:
+def show_timer_tab(cfg: ControllerConfig, fixed_transport: Optional[str] = None, key_prefix: str = "timer") -> None:
     st.subheader("倒计时命令")
-    transport = st.radio("传输", options=["mqtt", "udp"], horizontal=True)
-    operation = st.selectbox("命令", options=["add", "remove", "query", "list", "stats", "clear"])
+    transport = "udp"
+    st.caption("当前传输方式: UDP")
 
-    task_id = st.number_input("task_id", min_value=0, max_value=2**31 - 1, value=101, step=1)
-    timer_type = st.selectbox("type", options=["once", "daily", "weekly"], index=0)
-    trigger_time = st.text_input("trigger_time", value="2026-04-21T23:00:00")
+    operation = st.selectbox(
+        "命令",
+        options=["add", "remove", "query", "list", "stats", "clear"],
+        key=f"{key_prefix}_operation",
+    )
 
-    state = build_state("定时_") if operation == "add" else {}
+    task_id = st.number_input(
+        "task_id",
+        min_value=0,
+        max_value=2**31 - 1,
+        value=101,
+        step=1,
+        key=f"{key_prefix}_task_id",
+    )
+    timer_type = st.selectbox("type", options=["once", "daily", "weekly"], index=0, key=f"{key_prefix}_type")
+    trigger_time = st.text_input("trigger_time", value="2026-04-21T23:00:00", key=f"{key_prefix}_trigger_time")
 
-    if st.button("执行", key="timer_run"):
+    state = build_state(f"{key_prefix}_定时_") if operation == "add" else {}
+
+    if st.button("执行", key=f"{key_prefix}_run"):
         ctl = AputureController(cfg)
         try:
-            if transport == "mqtt":
-                ctl.connect_mqtt()
-
             if operation == "add":
-                if transport == "mqtt":
-                    result = ctl.add_timer_mqtt(int(task_id), timer_type, trigger_time, **state)
-                else:
-                    payload = {"task_id": int(task_id), "type": timer_type, "trigger_time": trigger_time, **state}
-                    result = ctl.send_timer_command_udp("add_timer", payload=payload)
+                payload = {"task_id": int(task_id), "type": timer_type, "trigger_time": trigger_time, **state}
+                result = ctl.send_timer_command_udp("add_timer", payload=payload)
             elif operation == "remove":
-                result = ctl.remove_timer_mqtt(int(task_id)) if transport == "mqtt" else ctl.send_timer_command_udp("remove_timer", {"task_id": int(task_id)})
+                result = ctl.send_timer_command_udp("remove_timer", {"task_id": int(task_id)})
             elif operation == "query":
-                result = ctl.query_timer_mqtt(int(task_id)) if transport == "mqtt" else ctl.send_timer_command_udp("query_timer", {"task_id": int(task_id)})
+                result = ctl.send_timer_command_udp("query_timer", {"task_id": int(task_id)})
             elif operation == "list":
-                result = ctl.list_timer_mqtt() if transport == "mqtt" else ctl.send_timer_command_udp("list_timer")
+                result = ctl.send_timer_command_udp("list_timer")
             elif operation == "stats":
-                result = ctl.stats_timer_mqtt() if transport == "mqtt" else ctl.send_timer_command_udp("stats_timer")
+                result = ctl.send_timer_command_udp("stats_timer")
             else:
-                result = ctl.clear_timer_mqtt() if transport == "mqtt" else ctl.send_timer_command_udp("clear_timer")
+                result = ctl.send_timer_command_udp("clear_timer")
 
             st.json(result)
         except Exception as exc:
             st.error(str(exc))
         finally:
-            ctl.disconnect_mqtt()
+            pass
 
 
 def show_ambl_tab(cfg: ControllerConfig) -> None:
@@ -181,9 +310,9 @@ def show_ambl_tab(cfg: ControllerConfig) -> None:
 
 def show_ble_tab() -> None:
     st.subheader("BLE 倒计时编码")
-    timer_type = st.selectbox("type", options=["once", "daily", "weekly"], index=0)
-    trigger_time = st.text_input("trigger_time", value="2026-04-21T20:10:05")
-    weekday = st.number_input("weekday(weekly用)", min_value=0, max_value=6, value=2, step=1)
+    timer_type = st.selectbox("type", options=["once", "daily", "weekly"], index=0, key="ble_type")
+    trigger_time = st.text_input("trigger_time", value="2026-04-21T20:10:05", key="ble_trigger_time")
+    weekday = st.number_input("weekday(weekly用)", min_value=0, max_value=6, value=2, step=1, key="ble_weekday")
 
     state = build_state("BLE_")
     if st.button("生成 TLV/CRC"):
@@ -201,22 +330,25 @@ def show_ble_tab() -> None:
             st.error(str(exc))
 
 
-def show_batch_tab(cfg: ControllerConfig) -> None:
+def show_batch_tab(cfg: ControllerConfig, fixed_transport: Optional[str] = None, key_prefix: str = "batch") -> None:
     st.subheader("SDK 批量创建")
-    transport = st.radio("batch transport", options=["mqtt", "udp"], horizontal=True)
-    timer_type = st.selectbox("batch type", options=["once", "daily", "weekly"], index=0)
+    transport = "udp"
+    st.caption("当前传输方式: UDP")
+
+    timer_type = st.selectbox("batch type", options=["once", "daily", "weekly"], index=0, key=f"{key_prefix}_type")
     trigger_times = st.text_area(
         "trigger_times（每行一个）",
         value="2026-04-21T23:00:00\n2026-04-21T23:05:00\n2026-04-21T23:10:00",
         height=100,
+        key=f"{key_prefix}_trigger_times",
     )
-    retries = st.number_input("retries", min_value=0, max_value=10, value=2, step=1)
-    retry_delay = st.number_input("retry_delay", min_value=0.0, max_value=10.0, value=0.3, step=0.1)
-    rollback = st.checkbox("失败回滚", value=True)
+    retries = st.number_input("retries", min_value=0, max_value=10, value=2, step=1, key=f"{key_prefix}_retries")
+    retry_delay = st.number_input("retry_delay", min_value=0.0, max_value=10.0, value=0.3, step=0.1, key=f"{key_prefix}_retry_delay")
+    rollback = st.checkbox("失败回滚", value=True, key=f"{key_prefix}_rollback")
 
-    state = build_state("批量_")
+    state = build_state(f"{key_prefix}_批量_")
 
-    if st.button("执行批量创建"):
+    if st.button("执行批量创建", key=f"{key_prefix}_run"):
         sdk = AputureSDK(cfg)
         lines = [x.strip() for x in trigger_times.splitlines() if x.strip()]
         items = [(timer_type, t, LightState(**state)) for t in lines]
@@ -333,16 +465,16 @@ def show_batch_device_tab() -> None:
 
     st.write(f"**已加载 {len(ips)} 个设备**")
 
-    operation = st.radio("操作类型", options=["批量灯光", "批量倒计时"], horizontal=True)
+    operation = st.radio("操作类型", options=["批量灯光", "批量倒计时"], horizontal=True, key="batch_device_operation")
 
     col1, col2 = st.columns(2)
     with col1:
         st.write("**设备选择**")
-        select_all = st.checkbox("全选", value=True)
+        select_all = st.checkbox("全选", value=True, key="batch_device_select_all")
         if select_all:
             selected_ips = ips
         else:
-            selected_ips = st.multiselect("选择 IP", options=ips, default=[] if not ips else [ips[0]])
+            selected_ips = st.multiselect("选择 IP", options=ips, default=[] if not ips else [ips[0]], key="batch_device_selected_ips")
     
     if not selected_ips:
         st.warning("请至少选择一个设备")
@@ -357,9 +489,9 @@ def show_batch_device_tab() -> None:
     if operation == "批量灯光":
         st.subheader("MQTT 灯光参数")
         state = build_state("批量灯光_")
-        mqtt_host = st.text_input("MQTT Host", value="broker.emqx.io")
-        mqtt_port = st.number_input("MQTT Port", min_value=1, max_value=65535, value=8883, step=1)
-        mqtt_tls = st.checkbox("MQTT TLS", value=True)
+        mqtt_host = st.text_input("MQTT Host", value="broker.emqx.io", key="batch_device_mqtt_host")
+        mqtt_port = st.number_input("MQTT Port", min_value=1, max_value=65535, value=8883, step=1, key="batch_device_mqtt_port")
+        mqtt_tls = st.checkbox("MQTT TLS", value=True, key="batch_device_mqtt_tls")
 
         if st.button("执行批量灯光"):
             try:
@@ -377,8 +509,8 @@ def show_batch_device_tab() -> None:
 
     else:
         st.subheader("UDP 倒计时参数")
-        cmd = st.selectbox("命令", options=["stats_timer", "list_timer", "query_timer", "clear_timer"], index=0)
-        timeout = st.number_input("超时(秒)", min_value=0.1, max_value=5.0, value=1.5, step=0.1)
+        cmd = st.selectbox("命令", options=["stats_timer", "list_timer", "query_timer", "clear_timer"], index=0, key="batch_device_timer_cmd")
+        timeout = st.number_input("超时(秒)", min_value=0.1, max_value=5.0, value=1.5, step=0.1, key="batch_device_timer_timeout")
 
         task_id = None
         if cmd in {"remove_timer", "query_timer"}:
@@ -407,30 +539,29 @@ def main() -> None:
     st.title("Aputure IP 控制器 UI")
 
     cfg = build_config()
+    show_mqtt_status_panel(cfg)
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "灯光控制",
-        "倒计时",
-        "AMBL",
-        "BLE 编码",
-        "批量任务",
-        "主动扫描",
-        "设备快速控制",
+    tab_mqtt, tab_udp, tab_ble, tab_manage = st.tabs([
+        "MQTT",
+        "UDP",
+        "BLE",
+        "设备管理",
     ])
 
-    with tab1:
-        show_light_tab(cfg)
-    with tab2:
-        show_timer_tab(cfg)
-    with tab3:
+    with tab_mqtt:
+        show_mqtt_dialog_tab(cfg)
+
+    with tab_udp:
+        show_timer_tab(cfg, fixed_transport="udp", key_prefix="udp_timer")
+        st.divider()
         show_ambl_tab(cfg)
-    with tab4:
-        show_ble_tab()
-    with tab5:
-        show_batch_tab(cfg)
-    with tab6:
+        st.divider()
         show_scan_tab(cfg)
-    with tab7:
+
+    with tab_ble:
+        show_ble_tab()
+
+    with tab_manage:
         show_batch_device_tab()
 
 

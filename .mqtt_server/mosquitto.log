@@ -1,0 +1,22 @@
+1776841428: The 'allow_duplicate_messages' option is now deprecated and will be removed in a future version. The behaviour will default to true.
+1776841428: mosquitto version 2.0.18 starting
+1776841428: Config loaded from /home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.conf.
+1776841428: Opening ipv4 listen socket on port 1883.
+1776841428: Error: Address already in use
+1776842353: The 'allow_duplicate_messages' option is now deprecated and will be removed in a future version. The behaviour will default to true.
+1776842353: mosquitto version 2.0.18 starting
+1776842353: Config loaded from /home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.conf.
+1776842353: Error: Unable to open acl_file "/home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.acl".
+1776842353: Error opening acl file "/home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.acl".
+1776842636: mosquitto version 2.0.18 starting
+1776842636: Config loaded from /home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.conf.
+1776842636: Error: Unable to open acl_file "/home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.acl".
+1776842636: Error opening acl file "/home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.acl".
+1776842810: mosquitto version 2.0.18 starting
+1776842810: Config loaded from /home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.conf.
+1776842810: Warning: File /home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.acl has world readable permissions. Future versions will refuse to load this file.
+To fix this, use `chmod 0700 /home/hp/Documents/zachary-git/Project-1/.mqtt_server/mosquitto.acl`.
+1776842810: Opening ipv4 listen socket on port 8883.
+1776842810: mosquitto version 2.0.18 running
+1776842868: New connection from 127.0.0.1:42926 on port 8883.
+1776842868: Client <unknown> closed its connection.

@@ -1,0 +1,2 @@
+device_sn,mac,client_id,topic_down,topic_timer,topic_timer_reply,group_id,firmware_ver,ca_version,status
+AP-0001,112233aabbcc,aputure-112233aabbcc,iot/device/112233aabbcc/down,iot/device/112233aabbcc/timer,iot/device/112233aabbcc/timer_reply,group,v1.0.x,emq-root-2026Q2,active

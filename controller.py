@@ -68,6 +68,10 @@ class MqttNotConnectedError(ControllerError):
     pass
 
 
+class MqttClientDisabledError(ControllerError):
+    pass
+
+
 class CommandTimeoutError(ControllerError):
     pass
 
@@ -99,37 +103,7 @@ class AputureController:
         return f"iot/device/{self.mac}/timer_reply"
 
     def connect_mqtt(self) -> None:
-        if mqtt is None:
-            raise MqttConnectionError("缺少 paho-mqtt，请先安装: pip install paho-mqtt")
-
-        client_id = f"{self.config.mqtt_client_prefix}-{self.mac}"
-        client = mqtt.Client(client_id=client_id, protocol=mqtt.MQTTv311)
-
-        if self.config.mqtt_username or self.config.mqtt_password:
-            client.username_pw_set(self.config.mqtt_username, self.config.mqtt_password)
-
-        if self.config.mqtt_tls:
-            client.tls_set()
-
-        client.reconnect_delay_set(
-            min_delay=self.config.mqtt_reconnect_min_delay,
-            max_delay=self.config.mqtt_reconnect_max_delay,
-        )
-
-        client.on_message = self._on_mqtt_message
-        client.on_connect = self._on_mqtt_connect
-        client.on_disconnect = self._on_mqtt_disconnect
-
-        self._mqtt_connected.clear()
-        client.connect_async(self.config.mqtt_host, self.config.mqtt_port, keepalive=60)
-        client.loop_start()
-        self._mqtt = client
-
-        if not self._mqtt_connected.wait(timeout=self.config.mqtt_connect_timeout):
-            self.disconnect_mqtt()
-            raise MqttConnectionError(
-                f"MQTT 连接超时，host={self.config.mqtt_host}, port={self.config.mqtt_port}, rc={self._last_mqtt_rc}"
-            )
+        raise MqttClientDisabledError("当前为 MQTT Server 模式，已禁用 MQTT 客户端连接")
 
     def disconnect_mqtt(self) -> None:
         if not self._mqtt:
@@ -141,7 +115,7 @@ class AputureController:
 
     def send_light_control(self, payload: Dict[str, Any], qos: int = 1) -> None:
         self._validate_light_payload(payload)
-        self._publish_json(self.down_topic, payload, qos=qos)
+        raise MqttClientDisabledError("当前为 MQTT Server 模式，已禁用 MQTT 客户端下发")
 
     def send_timer_command_mqtt(
         self,
@@ -151,27 +125,7 @@ class AputureController:
         timeout: float = 5.0,
         qos: int = 1,
     ) -> Optional[Dict[str, Any]]:
-        body: Dict[str, Any] = {"cmd": cmd}
-        if payload:
-            body.update(payload)
-
-        self._validate_timer_payload(body)
-        self._drain_timer_reply_queue()
-        self._publish_json(self.timer_topic, body, qos=qos)
-
-        if not wait_reply:
-            return None
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            remain = max(0.01, deadline - time.time())
-            try:
-                reply = self._timer_reply_queue.get(timeout=remain)
-            except queue.Empty:
-                break
-            if reply.get("action") == cmd:
-                return reply
-        raise CommandTimeoutError(f"等待 timer_reply 超时: cmd={cmd}")
+        raise MqttClientDisabledError("当前为 MQTT Server 模式，已禁用 MQTT 客户端命令")
 
     def add_timer_mqtt(
         self,
@@ -541,12 +495,6 @@ if __name__ == "__main__":
         device_ip="192.168.1.100",
     )
     ctl = AputureController(cfg)
-
-    # MQTT 示例
-    # ctl.connect_mqtt()
-    # ctl.send_light_control({"power": True, "mode": "cct", "lightness": 60, "cct": 4300})
-    # print(ctl.add_timer_mqtt(101, "once", "2026-04-21T23:00:00", power=True, mode="cct", lightness=75, cct=4500))
-    # ctl.disconnect_mqtt()
 
     # UDP 倒计时示例
     # print(ctl.send_timer_command_udp("stats_timer"))
