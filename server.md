@@ -211,4 +211,4 @@ deny  all
 
 ---
 
-附注: 本模板是运维交付文档，不替代工程协议文档。协议字段与行为以 docs/MQTT_UDP_PROTOCOL_SPEC.md 为准。
+附注: 本模板是运维交付文档，不替代工程协议文档。协议字段与行为以 docs/network/MQTT_UDP_PROTOCOL_SPEC.md 为准。
